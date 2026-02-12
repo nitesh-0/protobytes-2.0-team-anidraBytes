@@ -1,6 +1,7 @@
 """
 Drishtimarga — Monocular Depth Estimation
-Uses Depth Anything V2 METRIC models that output actual meters.
+Uses Depth Anything V2 RELATIVE model for reliable depth ordering.
+Outputs normalized 0-1 depth map (0 = close, 1 = far).
 Falls back to bbox-based estimation if model fails to load.
 """
 
@@ -19,9 +20,10 @@ logger = logging.getLogger(__name__)
 
 class DepthEstimator:
     """
-    Monocular depth estimation using Depth Anything V2 Metric models.
-    These models output depth directly in meters (no normalization needed).
-    Falls back to bbox-size heuristic if model fails to load.
+    Monocular depth estimation using Depth Anything V2 (relative).
+    Outputs normalized depth map where 0 = closest, 1 = farthest.
+    Actual metric distances are computed downstream by blending with
+    bbox-height heuristics in SpatialEngine.
     """
 
     def __init__(self, config: DepthConfig):
@@ -43,22 +45,17 @@ class DepthEstimator:
         return self.config.device
 
     def _load_model(self):
-        """Load Depth Anything V2 Metric model."""
+        """Load Depth Anything V2 relative model."""
         try:
-            logger.info(f"Loading Depth Anything V2 Metric ({self.config.model_name})...")
+            logger.info(f"Loading Depth Anything V2 ({self.config.model_name})...")
 
             from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
-            # Metric models output depth in METERS directly
-            # Indoor: trained on Hypersim, range 0-20m
-            # Outdoor: trained on Virtual KITTI, range 0-80m
+            # Relative models — reliable depth ordering (NOT metric)
             model_map = {
-                "small": "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf",
-                "base": "depth-anything/Depth-Anything-V2-Metric-Indoor-Base-hf",
-                "large": "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf",
-                "outdoor-small": "depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf",
-                "outdoor-base": "depth-anything/Depth-Anything-V2-Metric-Outdoor-Base-hf",
-                "outdoor-large": "depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf",
+                "small": "depth-anything/Depth-Anything-V2-Small-hf",
+                "base": "depth-anything/Depth-Anything-V2-Base-hf",
+                "large": "depth-anything/Depth-Anything-V2-Large-hf",
             }
             model_id = model_map.get(self.config.model_name, self.config.model_name)
 
@@ -72,7 +69,7 @@ class DepthEstimator:
             self._run_model(dummy)
 
             self._model_loaded = True
-            logger.info(f"Depth Metric model loaded on {self.device}")
+            logger.info(f"Depth model loaded on {self.device}")
 
         except Exception as e:
             logger.warning(f"Failed to load depth model: {e}")
@@ -81,7 +78,7 @@ class DepthEstimator:
 
     @torch.no_grad()
     def _run_model(self, frame: np.ndarray) -> np.ndarray:
-        """Run the depth model on a frame. Returns depth in meters."""
+        """Run the depth model on a frame. Returns raw disparity output."""
         from PIL import Image
 
         image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
@@ -97,12 +94,12 @@ class DepthEstimator:
             align_corners=False,
         ).squeeze().cpu().numpy()
 
-        return depth  # values are in METERS
+        return depth
 
     def estimate(self, frame: np.ndarray) -> Optional[np.ndarray]:
         """
         Get depth map for the frame.
-        Returns depth map in METERS (Metric model output) or None.
+        Returns normalized depth map (0 = close, 1 = far) or None.
         Runs model only every N frames for performance; returns cached map otherwise.
         """
         self._frame_counter += 1
@@ -119,18 +116,25 @@ class DepthEstimator:
         depth_map = self._run_model(frame)
         self._last_inference_ms = (time.perf_counter() - t_start) * 1000
 
-        # Metric model outputs depth in meters directly.
-        # Clip to valid range (0.3m - 20m for indoor model)
-        depth_map = np.clip(depth_map, 0.3, 20.0)
+        # Normalize to 0-1 range
+        d_min, d_max = depth_map.min(), depth_map.max()
+        if d_max - d_min > 1e-6:
+            depth_map = (depth_map - d_min) / (d_max - d_min)
+        else:
+            depth_map = np.zeros_like(depth_map)
+
+        # Depth Anything V2 outputs DISPARITY (higher = closer).
+        # Invert so that 0 = close, 1 = far for intuitive downstream use.
+        depth_map = 1.0 - depth_map
 
         self._last_depth_map = depth_map
         return depth_map
 
     def get_depth_at_point(self, depth_map: Optional[np.ndarray],
                            x: int, y: int) -> float:
-        """Get depth in meters at a pixel coordinate."""
+        """Get relative depth value (0=close, 1=far) at a pixel coordinate."""
         if depth_map is None:
-            return 5.0  # default mid-range in meters
+            return 0.5  # default mid-range
         h, w = depth_map.shape[:2]
         x = np.clip(int(x), 0, w - 1)
         y = np.clip(int(y), 0, h - 1)
@@ -143,12 +147,10 @@ class DepthEstimator:
         return float(np.median(depth_map[y1:y2, x1:x2]))
 
     def get_depth_visualization(self, depth_map: Optional[np.ndarray]) -> Optional[np.ndarray]:
-        """Convert depth map (in meters) to color visualization."""
+        """Convert depth map to color visualization."""
         if depth_map is None:
             return None
-        # Normalize meters to 0-255 for visualization (0m=bright, 20m=dark)
-        depth_normalized = np.clip(depth_map / 20.0, 0.0, 1.0)
-        depth_vis = (depth_normalized * 255).astype(np.uint8)
+        depth_vis = (depth_map * 255).astype(np.uint8)
         return cv2.applyColorMap(depth_vis, cv2.COLORMAP_MAGMA)
 
     @property

@@ -18,9 +18,9 @@ class CameraConfig:
 
 @dataclass
 class DetectorConfig:
-    # YOLO11m for best accuracy/speed trade-off
-    model_name: str = "yolo11m.pt"
-    confidence: float = 0.35
+    # YOLOv8s — best balance of accuracy and low false positives
+    model_name: str = "yolov8s.pt"
+    confidence: float = 0.50
     iou_threshold: float = 0.5
     input_size: int = 640               # 640 for best accuracy
     device: str = "auto"                # "auto", "cuda", "cpu"
@@ -30,7 +30,7 @@ class DetectorConfig:
 
 @dataclass
 class DepthConfig:
-    model_name: str = "base"            # "small", "base", or "large" (Depth Anything V2)
+    model_name: str = "small"           # "small", "base", or "large" (Depth Anything V2 relative)
     enabled: bool = True
     # skip frames for speed (1 = every frame)
     run_every_n_frames: int = 3

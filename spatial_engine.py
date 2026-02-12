@@ -177,33 +177,53 @@ class SpatialEngine:
                           frame_shape: Tuple[int, int]) -> float:
         """
         Estimate metric distance to a detected object.
-        Uses depth model if available, falls back to bbox-height heuristic.
+        Uses a HYBRID approach:
+          1. Bbox-height heuristic → gives approximate absolute meters
+          2. Relative depth map → gives reliable ordering (closer vs farther)
+          3. Blend both for best results
         """
         h_frame, w_frame = frame_shape[:2]
 
-        # Method 1: Depth model (if available — outputs meters directly)
+        # ── Bbox-height distance (approximate absolute meters) ──
+        bbox_dist = None
+        class_name = detection.class_name
+        known_h = self.s_cfg.known_heights.get(class_name, None)
+        if known_h is not None and detection.bbox_height > 10:
+            bbox_dist = (known_h * self.s_cfg.focal_length_px) / detection.bbox_height
+            bbox_dist = float(np.clip(bbox_dist, 0.3, 20.0))
+
+        # ── Depth model relative value (0 = close, 1 = far) ──
+        rel_depth = None
         if depth_map is not None:
             cx, cy = int(detection.center[0]), int(detection.center[1])
-            # Sample depth in a small region around center
             patch = 8
             y1 = max(0, cy - patch)
             y2 = min(h_frame, cy + patch)
             x1 = max(0, cx - patch)
             x2 = min(w_frame, cx + patch)
-            # Metric model outputs meters directly — no conversion needed
-            distance_m = float(np.median(depth_map[y1:y2, x1:x2]))
-            return max(0.3, min(20.0, distance_m))
+            rel_depth = float(np.median(depth_map[y1:y2, x1:x2]))
 
-        # Method 2: Bbox height heuristic (fallback)
-        class_name = detection.class_name
-        known_h = self.s_cfg.known_heights.get(class_name, 1.0)
-        if detection.bbox_height > 5:
-            distance_m = (known_h * self.s_cfg.focal_length_px) / \
-                detection.bbox_height
+        # ── Blend strategies ──
+        if bbox_dist is not None and rel_depth is not None:
+            # Both available: bbox gives scale, depth refines.
+            # Map rel_depth 0-1 to a rough distance for blending.
+            depth_dist = 0.5 + 14.5 * rel_depth  # 0→0.5m, 1→15m
+            # Weighted average: trust bbox more (0.65) since it has absolute scale
+            distance_m = 0.65 * bbox_dist + 0.35 * depth_dist
+        elif bbox_dist is not None:
+            # Only bbox available
+            distance_m = bbox_dist
+        elif rel_depth is not None:
+            # Only depth — rough mapping without calibration
+            distance_m = 0.5 + 14.5 * rel_depth
         else:
-            distance_m = 20.0  # very far
+            # Neither available — use bbox height as last resort
+            if detection.bbox_height > 5:
+                distance_m = (1.0 * self.s_cfg.focal_length_px) / detection.bbox_height
+            else:
+                distance_m = 15.0
 
-        return np.clip(distance_m, 0.3, 50.0)
+        return float(np.clip(distance_m, 0.3, 20.0))
 
     def update(self, detections: List[Detection],
                depth_map: Optional[np.ndarray],

@@ -9,7 +9,7 @@ Usage:
     python main.py --source "http://192.168.4.1:81/stream"  # ESP32-CAM
     python main.py --no-depth          # Disable depth model (bbox fallback)
     python main.py --no-display        # Headless mode (audio only)
-    python main.py --model yolo11m.pt   # Use YOLO11 medium model (default)
+    python main.py --model yolov8s.pt   # Use YOLOv8 small model (default)
 """
 
 import argparse
@@ -298,18 +298,17 @@ Examples:
     )
     parser.add_argument("--source", default=0,
                         help="Camera source: index (0,1,2) or URL for ESP32-CAM")
-    parser.add_argument("--model", default="yolo11m.pt",
-                        help="YOLO model name (yolo11n.pt, yolo11m.pt, yolov8s.pt)")
-    parser.add_argument("--conf", type=float, default=0.35,
+    parser.add_argument("--model", default="yolov8s.pt",
+                        help="YOLO model (yolov8n.pt, yolov8s.pt, yolov8m.pt)")
+    parser.add_argument("--conf", type=float, default=0.50,
                         help="Detection confidence threshold")
     parser.add_argument("--size", type=int, default=640,
                         help="YOLO input size (320, 416, or 640)")
     parser.add_argument("--no-depth", action="store_true",
                         help="Disable depth model (use bbox-size fallback)")
-    parser.add_argument("--depth-model", default="base",
-                        choices=["small", "base", "large",
-                                 "outdoor-small", "outdoor-base", "outdoor-large"],
-                        help="Depth Anything V2 Metric variant (default: base = indoor)")
+    parser.add_argument("--depth-model", default="small",
+                        choices=["small", "base", "large"],
+                        help="Depth Anything V2 relative model variant")
     parser.add_argument("--no-display", action="store_true",
                         help="Headless mode — audio only, no video window")
     parser.add_argument("--speech-rate", type=int, default=190,

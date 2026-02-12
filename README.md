@@ -37,10 +37,10 @@
 * [cite_start]OpenCV (Video Capture & Frame Management) [cite: 47]
 
 **AI Models:**
-* [cite_start]**Object Detection:** YOLOv8n (Nano) - *Selected for high speed (80-150 FPS) and accuracy* [cite: 124]
-* [cite_start]**Depth Estimation:** Depth Anything V2 Small - *Selected for optimal monocular accuracy at ~30 FPS* [cite: 150]
-* [cite_start]**Object Tracking:** ByteTrack - *Selected for persistent ID tracking and zero-setup integration* [cite: 191]
-* [cite_start]**Spatial Mapping:** LocalSpatialMap (Hybrid Optical Flow) [cite: 39]
+* **Object Detection:** YOLOv8s (Small) - *Selected for superior stability and lower hallucination rate than Nano/v11m*
+* **Depth Estimation:** Depth Anything V2 Small + Hybrid Calibration - *Reliable relative depth blended with bbox-height scaling*
+* **Object Tracking:** ByteTrack - *Persistent ID tracking for consistent narration*
+* **Spatial Logic:** Hybrid Distance Estimator (Blended Bbox + Monocular Depth)
 
 **Audio:**
 * [cite_start]pyttsx3 - *Selected for offline, zero-latency text-to-speech* [cite: 278]
