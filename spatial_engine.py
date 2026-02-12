@@ -181,7 +181,7 @@ class SpatialEngine:
         """
         h_frame, w_frame = frame_shape[:2]
 
-        # Method 1: Depth model (if available)
+        # Method 1: Depth model (if available — outputs meters directly)
         if depth_map is not None:
             cx, cy = int(detection.center[0]), int(detection.center[1])
             # Sample depth in a small region around center
@@ -190,12 +190,9 @@ class SpatialEngine:
             y2 = min(h_frame, cy + patch)
             x1 = max(0, cx - patch)
             x2 = min(w_frame, cx + patch)
-            rel_depth = float(np.median(depth_map[y1:y2, x1:x2]))
-
-            # Convert relative depth (0-1) to approximate meters
-            # Mapping: 0 → 0.3m, 1 → 20m (tunable)
-            distance_m = 0.3 + rel_depth * 19.7
-            return max(0.3, distance_m)
+            # Metric model outputs meters directly — no conversion needed
+            distance_m = float(np.median(depth_map[y1:y2, x1:x2]))
+            return max(0.3, min(20.0, distance_m))
 
         # Method 2: Bbox height heuristic (fallback)
         class_name = detection.class_name
@@ -251,10 +248,9 @@ class SpatialEngine:
             if len(obj.history) > self.s_cfg.track_history_length:
                 obj.history = obj.history[-self.s_cfg.track_history_length:]
 
-            # Object counts as "new" for the first 1.5 seconds after appearing.
-            # This is crucial: it gives the HIGH-priority first-detection message
-            # multiple chances to be queued in case TTS is busy with another message.
-            is_new = (now - obj.first_seen) < 1.5
+            # Object counts as "new" for the first 0.5 seconds after appearing.
+            # Short window to avoid spamming the same first-detection message.
+            is_new = (now - obj.first_seen) < 0.5
 
             # Update occupancy grid
             self._update_grid(distance, rel_x)
@@ -333,12 +329,13 @@ class SpatialEngine:
         # --- Priority Assignment ---
         if ttc < self.t_cfg.critical_ttc and velocity > 0.5:
             priority = Priority.CRITICAL
-        elif (is_new and distance < 4.0) or velocity > self.t_cfg.approach_speed_threshold:
+        elif (is_new and distance < 2.5) or velocity > 0.5:
             priority = Priority.HIGH
         elif is_new or distance < self.t_cfg.close_distance:
             priority = Priority.NORMAL
         else:
-            priority = Priority.LOW
+            # Non-new, non-approaching, non-close: skip entirely
+            priority = Priority.SKIP
 
         # --- Generate Message ---
         message = self._build_message(
@@ -491,26 +488,15 @@ class SpatialEngine:
 
     def _build_navigation_update(self, active_objects: List[TrackedObject]) -> str:
         """
-        Build a concise navigation update summarizing what's around
-        the user and what they should do.
+        Build a concise navigation update grouping similar objects
+        to avoid overwhelming the user.
         """
-        # Sort by distance
-        sorted_objs = sorted(active_objects, key=lambda o: o.distance)
-
-        # Take the closest 3
-        closest = sorted_objs[:3]
-        parts = []
-        for obj in closest:
-            pos_phrase = self._position_phrase(obj.position)
-            parts.append(
-                f"{obj.class_name} at {obj.distance:.1f} meters {pos_phrase}")
-
-        summary = ". ".join(parts)
+        summary = self._group_objects_summary(active_objects)
         path = self.get_path_status()
         return f"{summary}. {path}"
 
     def get_scene_summary(self) -> str:
-        """Generate a brief actionable overview of surroundings."""
+        """Generate a brief actionable overview grouping similar objects."""
         if not self.tracked_objects:
             return "No objects detected. Path is clear, safe to move forward."
 
@@ -521,28 +507,40 @@ class SpatialEngine:
         if not active:
             return "Area appears clear. You can walk forward."
 
-        # Group by position
-        left = [o for o in active if o.position == Position.LEFT]
-        center = [o for o in active if o.position == Position.CENTER]
-        right = [o for o in active if o.position == Position.RIGHT]
+        summary = self._group_objects_summary(active)
+        path = self.get_path_status()
+        return f"{summary}. {path}"
+
+    def _group_objects_summary(self, objects: List[TrackedObject]) -> str:
+        """
+        Group similar objects to produce concise summaries.
+        E.g. instead of "chair at 2m, chair at 2.5m, chair at 3m"
+        says "3 chairs, closest at 2 meters on your left".
+        """
+        from collections import Counter
+
+        # Group by (class_name, position)
+        groups: Dict[str, list] = defaultdict(list)
+        for obj in objects:
+            groups[obj.class_name].append(obj)
 
         parts = []
-        if center:
-            items = []
-            for o in sorted(center, key=lambda x: x.distance)[:2]:
-                items.append(f"{o.class_name} at {o.distance:.1f} meters")
-            parts.append(f"{', '.join(items)} ahead")
-        if left:
-            items = []
-            for o in sorted(left, key=lambda x: x.distance)[:2]:
-                items.append(f"{o.class_name} at {o.distance:.1f} meters")
-            parts.append(f"{', '.join(items)} on your left")
-        if right:
-            items = []
-            for o in sorted(right, key=lambda x: x.distance)[:2]:
-                items.append(f"{o.class_name} at {o.distance:.1f} meters")
-            parts.append(f"{', '.join(items)} on your right")
+        # Sort groups by closest object distance
+        sorted_groups = sorted(
+            groups.items(), key=lambda kv: min(o.distance for o in kv[1]))
 
-        path = self.get_path_status()
-        summary = ". ".join(parts)
-        return f"{summary}. {path}"
+        for class_name, objs in sorted_groups[:4]:  # max 4 groups
+            objs_sorted = sorted(objs, key=lambda o: o.distance)
+            closest = objs_sorted[0]
+            pos_phrase = self._position_phrase(closest.position)
+            dist_str = f"{closest.distance:.1f} meters"
+
+            if len(objs) == 1:
+                parts.append(f"{class_name} at {dist_str} {pos_phrase}")
+            else:
+                # Pluralize simply
+                plural = class_name + "s" if not class_name.endswith("s") else class_name
+                parts.append(
+                    f"{len(objs)} {plural}, closest at {dist_str} {pos_phrase}")
+
+        return ". ".join(parts)

@@ -9,7 +9,7 @@ Pillow>=10.0.0
 # ── AI / ML ──
 torch>=2.0.0
 torchvision>=0.15.0
-ultralytics>=8.1.0         # YOLOv8 + ByteTrack tracking
+ultralytics>=8.3.0         # YOLO11 + YOLOv8 + ByteTrack tracking
 
 # ── Depth Estimation (optional — install for better depth) ──
 transformers>=4.36.0        # Depth Anything V2 via HuggingFace

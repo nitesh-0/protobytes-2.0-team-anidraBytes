@@ -1,6 +1,6 @@
 """
 Drishtimarga — Object Detection & Tracking
-YOLOv8 detection with ByteTrack persistent tracking.
+YOLO11 detection with ByteTrack persistent tracking.
 """
 
 import logging
@@ -36,7 +36,7 @@ class Detection:
 
 
 class ObjectDetector:
-    """YOLO-based detector with integrated ByteTrack tracking."""
+    """YOLO11-based detector with integrated ByteTrack tracking."""
 
     def __init__(self, config: DetectorConfig):
         self.config = config

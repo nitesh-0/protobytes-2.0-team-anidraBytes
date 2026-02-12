@@ -31,8 +31,8 @@ Camera (Webcam / ESP32-CAM)
     ┌──────────┴──────────┐
     ▼                     ▼
 ┌──────────┐     ┌──────────────────┐
-│ YOLOv8n  │     │ Depth Anything   │   ← Run in same thread but depth
-│ +ByteTrack│    │ V2 Small         │     skips frames for speed
+│ YOLO11m  │     │ Depth Anything   │   ← Run in same thread but depth
+│ +ByteTrack│    │ V2 Base          │     skips frames for speed
 └────┬─────┘     └───────┬──────────┘
      │                   │
      └─────────┬─────────┘
@@ -58,10 +58,10 @@ Camera (Webcam / ESP32-CAM)
 |---|---|
 | `main.py` | Pipeline orchestrator — entry point |
 | `config.py` | All tunable parameters (thresholds, models, etc.) |
-| `detector.py` | YOLOv8 detection + ByteTrack tracking |
+| `detector.py` | YOLO11 detection + ByteTrack tracking |
 | `depth_estimator.py` | Depth Anything V2 monocular depth |
-| `spatial_engine.py` | 3D tracking, velocity, threat scoring |
-| `audio_engine.py` | Priority TTS with cooldowns & interrupts |
+| `spatial_engine.py` | 3D tracking, velocity, threat scoring, grouped summaries |
+| `audio_engine.py` | Priority TTS with cooldowns, class dedup & interrupts |
 | `visualizer.py` | Annotated video display with HUD |
 
 ## Command-Line Options
@@ -71,14 +71,14 @@ python main.py --help
 
 Options:
   --source SOURCE       Camera index (0,1) or ESP32-CAM URL
-  --model MODEL         YOLO model (yolov8n.pt, yolov8s.pt, yolov11n.pt)
-  --conf FLOAT          Detection confidence (default: 0.45)
-  --size INT            YOLO input size: 320, 416, 640 (default: 416)
+  --model MODEL         YOLO model (yolo11n.pt, yolo11m.pt, yolov8s.pt)
+  --conf FLOAT          Detection confidence (default: 0.35)
+  --size INT            YOLO input size: 320, 416, 640 (default: 640)
   --no-depth            Disable depth model (faster, uses bbox fallback)
-  --depth-model NAME    Depth variant: small or base (default: small)
+  --depth-model NAME    Depth variant: small, base, or large (default: base)
   --no-display          Audio-only mode (no video window)
   --speech-rate INT     TTS words per minute (default: 190)
-  --cooldown FLOAT      Seconds between re-announcing same object (default: 3)
+  --cooldown FLOAT      Seconds between re-announcing same object (default: 5)
   --device DEVICE       auto, cuda, or cpu (default: auto)
 ```
 
@@ -94,11 +94,12 @@ Options:
 
 - **80+ object classes** detected out of the box (COCO dataset)
 - **Persistent tracking** — same object keeps its ID across frames
-- **Distance estimation** via Depth Anything V2 or bbox-size fallback
+- **Distance estimation** via Depth Anything V2 (inverted disparity → calibrated meters)
 - **Velocity & TTC** — detects approaching objects, computes time-to-collision
 - **Priority-based audio** — critical dangers interrupt, background objects suppressed
-- **Cooldown system** — no repetitive announcements
-- **Scene summaries** — periodic overview of surroundings
+- **Smart grouping** — "3 chairs nearby" instead of announcing each chair
+- **Cooldown system** — per-object and per-class dedup, no repetitive announcements
+- **Scene summaries** — periodic grouped overview of surroundings
 - **Occupancy grid** — spatial memory of nearby objects
 
 ## Performance Expectations

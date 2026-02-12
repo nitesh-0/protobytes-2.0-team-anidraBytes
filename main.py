@@ -9,7 +9,7 @@ Usage:
     python main.py --source "http://192.168.4.1:81/stream"  # ESP32-CAM
     python main.py --no-depth          # Disable depth model (bbox fallback)
     python main.py --no-display        # Headless mode (audio only)
-    python main.py --model yolov8s.pt  # Use a larger YOLO model
+    python main.py --model yolo11m.pt   # Use YOLO11 medium model (default)
 """
 
 import argparse
@@ -200,12 +200,16 @@ class DrishtimargaPipeline:
 
                 # ── 5. Audio feedback ──
                 self.audio.process_assessments(assessments)
-                self.audio.maybe_scene_summary(self.spatial.get_scene_summary)
 
                 # ── 6. Navigation guidance ──
                 # Path-clear, dodge advice, departure notices
                 nav_guidance = self.spatial.get_navigation_guidance()
                 self.audio.process_navigation_guidance(nav_guidance)
+
+                # Scene summary only if no nav guidance was given this cycle
+                if nav_guidance is None:
+                    self.audio.maybe_scene_summary(
+                        self.spatial.get_scene_summary)
 
                 # ── 7. Visualization ──
                 if self.config.display.show_video:
@@ -294,23 +298,24 @@ Examples:
     )
     parser.add_argument("--source", default=0,
                         help="Camera source: index (0,1,2) or URL for ESP32-CAM")
-    parser.add_argument("--model", default="yolov8n.pt",
-                        help="YOLO model name (yolov8n.pt, yolov8s.pt, yolov11n.pt)")
-    parser.add_argument("--conf", type=float, default=0.45,
+    parser.add_argument("--model", default="yolo11m.pt",
+                        help="YOLO model name (yolo11n.pt, yolo11m.pt, yolov8s.pt)")
+    parser.add_argument("--conf", type=float, default=0.35,
                         help="Detection confidence threshold")
-    parser.add_argument("--size", type=int, default=416,
+    parser.add_argument("--size", type=int, default=640,
                         help="YOLO input size (320, 416, or 640)")
     parser.add_argument("--no-depth", action="store_true",
                         help="Disable depth model (use bbox-size fallback)")
-    parser.add_argument("--depth-model", default="small",
-                        choices=["small", "base"],
-                        help="Depth Anything V2 variant")
+    parser.add_argument("--depth-model", default="base",
+                        choices=["small", "base", "large",
+                                 "outdoor-small", "outdoor-base", "outdoor-large"],
+                        help="Depth Anything V2 Metric variant (default: base = indoor)")
     parser.add_argument("--no-display", action="store_true",
                         help="Headless mode — audio only, no video window")
     parser.add_argument("--speech-rate", type=int, default=190,
                         help="TTS speech rate (words per minute)")
-    parser.add_argument("--cooldown", type=float, default=3.0,
-                        help="Seconds between re-announcing same object")
+    parser.add_argument("--cooldown", type=float, default=8.0,
+                        help="Seconds between re-announcing same object (default: 8)")
     parser.add_argument("--device", default="auto",
                         choices=["auto", "cuda", "cpu"],
                         help="Compute device")

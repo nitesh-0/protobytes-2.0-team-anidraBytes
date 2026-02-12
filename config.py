@@ -18,11 +18,11 @@ class CameraConfig:
 
 @dataclass
 class DetectorConfig:
-    # nano for speed; swap to yolov8s.pt for accuracy
-    model_name: str = "yolov8n.pt"
-    confidence: float = 0.45
+    # YOLO11m for best accuracy/speed trade-off
+    model_name: str = "yolo11m.pt"
+    confidence: float = 0.35
     iou_threshold: float = 0.5
-    input_size: int = 416               # smaller = faster (416 or 640)
+    input_size: int = 640               # 640 for best accuracy
     device: str = "auto"                # "auto", "cuda", "cpu"
     tracker: str = "bytetrack.yaml"     # or "botsort.yaml"
     half_precision: bool = True         # FP16 on GPU
@@ -30,10 +30,10 @@ class DetectorConfig:
 
 @dataclass
 class DepthConfig:
-    model_name: str = "small"           # "small" or "base" (Depth Anything V2)
+    model_name: str = "base"            # "small", "base", or "large" (Depth Anything V2)
     enabled: bool = True
     # skip frames for speed (1 = every frame)
-    run_every_n_frames: int = 2
+    run_every_n_frames: int = 3
     input_size: int = 518               # Depth Anything V2 native size
     device: str = "auto"
 
@@ -83,9 +83,9 @@ class NavigationConfig:
     far_zone: float = 10.0             # < 10m → mention existence
     # Path-clear announcements
     path_clear_delay: float = 2.0      # seconds of no detections before "path clear"
-    path_clear_repeat: float = 8.0     # seconds between repeated "path clear" messages
+    path_clear_repeat: float = 10.0    # seconds between repeated "path clear" messages
     # Guidance verbosity
-    guidance_interval: float = 5.0     # seconds between full navigation updates
+    guidance_interval: float = 12.0    # seconds between full navigation updates
     announce_departures: bool = True   # tell user when objects leave the scene
 
 
@@ -93,10 +93,12 @@ class NavigationConfig:
 class AudioConfig:
     rate: int = 190                     # speech rate (words per minute)
     volume: float = 1.0                 # 0.0 to 1.0
-    cooldown: float = 3.0              # seconds between re-announcing same object
-    distance_change_threshold: float = 0.5  # meters change to re-announce
-    max_announcements_per_cycle: int = 3
-    scene_summary_interval: float = 10.0  # seconds between scene overviews
+    cooldown: float = 8.0              # seconds between re-announcing same object
+    class_cooldown: float = 6.0        # seconds between re-announcing same class
+    distance_change_threshold: float = 0.8  # meters change to re-announce
+    max_announcements_per_cycle: int = 2
+    scene_summary_interval: float = 20.0  # seconds between scene overviews
+    min_speak_gap: float = 3.0         # minimum seconds between any two announcements
     urgent_prefix: str = "Warning!"
     critical_prefix: str = "DANGER!"
 

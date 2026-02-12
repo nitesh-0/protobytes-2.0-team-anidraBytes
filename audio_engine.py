@@ -35,11 +35,14 @@ class AudioEngine:
         self._queue: queue.PriorityQueue = queue.PriorityQueue()
         # {track_id: (last_time, last_distance)}
         self._cooldowns: Dict[int, tuple] = {}
+        # {class_name: (last_time, closest_distance)} — class-level cooldown
+        self._class_cooldowns: Dict[str, tuple] = {}
         self._urgent_lock = threading.Lock()
         self._urgent_message: Optional[str] = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._last_summary_time = time.time()
+        self._last_speak_time = 0.0  # global throttle
         self._speaking = False
         self._engine_ready = threading.Event()
 
@@ -230,6 +233,7 @@ class AudioEngine:
 
             self._speaking = False
             self._total_announcements += 1
+            self._last_speak_time = time.time()  # update global throttle
         except Exception as e:
             self._speaking = False
             logger.error(f"TTS speak error: {e}")
@@ -238,10 +242,14 @@ class AudioEngine:
     def process_assessments(self, assessments: list):
         """
         Filter and queue announcements from threat assessments.
-        Applies cooldown logic and priority filtering.
+        Applies cooldown logic, priority filtering, and global throttle.
         """
         now = time.time()
         announced_this_cycle = 0
+
+        # Global throttle: don't queue anything if we spoke very recently
+        if now - self._last_speak_time < self.config.min_speak_gap:
+            return
 
         for assessment in assessments:
             if announced_this_cycle >= self.config.max_announcements_per_cycle:
@@ -266,30 +274,38 @@ class AudioEngine:
 
             # Update cooldown state
             self._cooldowns[assessment.track_id] = (now, assessment.distance)
+            # Update class-level cooldown
+            self._class_cooldowns[assessment.class_name] = (
+                now, assessment.distance)
             announced_this_cycle += 1
 
     def _should_announce(self, assessment: ThreatAssessment, now: float) -> bool:
         """Check if we should announce this object (cooldown logic)."""
         tid = assessment.track_id
 
-        if tid not in self._cooldowns:
-            return True  # never announced before
+        # ── Per-object cooldown ──
+        if tid in self._cooldowns:
+            last_time, last_distance = self._cooldowns[tid]
 
-        last_time, last_distance = self._cooldowns[tid]
+            # Cooldown not expired and distance hasn't changed much?
+            if now - last_time <= self.config.cooldown:
+                if abs(assessment.distance - last_distance) <= self.config.distance_change_threshold:
+                    if not assessment.is_new:
+                        return False
 
-        # Cooldown expired?
-        if now - last_time > self.config.cooldown:
-            return True
+        # ── Class-level cooldown ──
+        # Suppress if same class was announced recently (e.g. avoid
+        # "chair... chair... chair" when there are many chairs)
+        cls = assessment.class_name
+        if cls in self._class_cooldowns:
+            cls_time, cls_dist = self._class_cooldowns[cls]
+            if now - cls_time <= self.config.class_cooldown:
+                # Only allow if this instance is significantly closer
+                if assessment.distance >= cls_dist - 0.5:
+                    if not assessment.is_new:
+                        return False
 
-        # Distance changed significantly?
-        if abs(assessment.distance - last_distance) > self.config.distance_change_threshold:
-            return True
-
-        # New object (just appeared)?
-        if assessment.is_new:
-            return True
-
-        return False
+        return True
 
     def _send_urgent(self, message: str):
         """Send an urgent message that interrupts current speech."""
