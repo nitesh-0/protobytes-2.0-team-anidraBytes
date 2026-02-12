@@ -278,10 +278,29 @@ class AudioEngine:
         last_time, last_distance = self._cooldowns[tid]
 
         # Cooldown expired?
-        if now - last_time > self.config.cooldown:
-            return True
+        time_passed = now - last_time
+        if time_passed > self.config.cooldown:
+            # If suppression is ON, we only re-announce if it MOVED or is MOVING.
+            if self.config.suppress_static_objects:
+                # Check for significant movement
+                params = self.config
+                dist_change = abs(assessment.distance - last_distance)
+                is_moving = abs(assessment.approach_velocity) > 0.2 
+                # (0.2 m/s is approx walking speed threshold)
+                
+                if dist_change > params.distance_change_threshold or is_moving:
+                    return True
+                
+                # If it's static, has it been a LONG time? (e.g. 15s reminder)
+                if time_passed > 15.0:
+                    return True
+                    
+                return False
+            else:
+                # Classic behavior: announce every cooldown seconds
+                return True
 
-        # Distance changed significantly?
+        # Distance changed significantly? (Immediate update inside cooldown)
         if abs(assessment.distance - last_distance) > self.config.distance_change_threshold:
             return True
 

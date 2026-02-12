@@ -192,10 +192,37 @@ class SpatialEngine:
             x2 = min(w_frame, cx + patch)
             rel_depth = float(np.median(depth_map[y1:y2, x1:x2]))
 
-            # Convert relative depth (0-1) to approximate meters
-            # Mapping: 0 → 0.3m, 1 → 20m (tunable)
-            distance_m = 0.3 + rel_depth * 19.7
-            return max(0.3, distance_m)
+            # Method 1: Depth model (Depth Anything V2 outputs inverse depth / disparity)
+            # We must invert it to get meters.
+            # Calibration: relative disparity 0..1 usually maps to far..close
+            # Actually, most monocular models output Disparity ~ 1/Distance
+            # So Distance = Scale / (Disparity + Epsilon)
+            
+            # Simple inversion logic:
+            # Let's assume the model output 'rel_depth' is proportional to 1/distance.
+            # We need to calibrate the scale factor based on real-world tests (or config).
+            # For now, we use a heuristic:
+            epsilon = 0.01  # avoid div by zero
+            # Invert: High value (close) -> Low distance
+            # Low value (far) -> High distance
+            
+            # rel_depth is 0..1 from our normalization in depth_estimator.py
+            # But wait, depth_estimator.py normalized it!
+            # If we assume the raw output was disparity, then:
+            # 0.0 (min disparity) = Farthest
+            # 1.0 (max disparity) = Closest
+            
+            # So: distance = Constant / (rel_depth + epsilon)
+            # Tuning Constant:
+            # If rel_depth = 1.0 (closest), we want ~0.5m -> Constant = 0.5
+            # If rel_depth = 0.0 (farthest), we want ~20m -> Constant / epsilon = 20 -> Constant = 0.2
+            
+            # Let's try a blend:
+            scale_factor = 2.0  # Tunable parameter
+            distance_m = scale_factor / (rel_depth + 0.1) 
+            
+            # Clamp to reasonable range for indoor/walking
+            return np.clip(distance_m, 0.4, 20.0)
 
         # Method 2: Bbox height heuristic (fallback)
         class_name = detection.class_name
@@ -340,6 +367,9 @@ class SpatialEngine:
         else:
             priority = Priority.LOW
 
+        # --- Audio Suppression Logic is handled in AudioEngine ---
+        # We just set priorities based on immediate threat.
+        
         # --- Generate Message ---
         message = self._build_message(
             obj, distance, position, velocity, ttc, priority)

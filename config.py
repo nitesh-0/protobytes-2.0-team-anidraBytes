@@ -19,7 +19,7 @@ class CameraConfig:
 @dataclass
 class DetectorConfig:
     # nano for speed; swap to yolov8s.pt for accuracy
-    model_name: str = "yolov8n.pt"
+    model_name: str = "yolo11m.pt"
     confidence: float = 0.45
     iou_threshold: float = 0.5
     input_size: int = 416               # smaller = faster (416 or 640)
@@ -30,7 +30,7 @@ class DetectorConfig:
 
 @dataclass
 class DepthConfig:
-    model_name: str = "small"           # "small" or "base" (Depth Anything V2)
+    model_name: str = "base"            # "small" or "base" (Depth Anything V2)
     enabled: bool = True
     # skip frames for speed (1 = every frame)
     run_every_n_frames: int = 2
@@ -98,7 +98,9 @@ class AudioConfig:
     max_announcements_per_cycle: int = 3
     scene_summary_interval: float = 10.0  # seconds between scene overviews
     urgent_prefix: str = "Warning!"
+    urgent_prefix: str = "Warning!"
     critical_prefix: str = "DANGER!"
+    suppress_static_objects: bool = True # Silent if object is not moving closer
 
 
 @dataclass
