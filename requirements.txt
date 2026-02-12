@@ -1,0 +1,21 @@
+# Drishtimarga — Dependencies
+# Install: pip install -r requirements.txt
+
+# ── Core ──
+numpy>=1.24.0
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# ── AI / ML ──
+torch>=2.0.0
+torchvision>=0.15.0
+ultralytics>=8.1.0         # YOLOv8 + ByteTrack tracking
+
+# ── Depth Estimation (optional — install for better depth) ──
+transformers>=4.36.0        # Depth Anything V2 via HuggingFace
+
+# ── Audio ──
+pyttsx3>=2.90               # Offline text-to-speech
+
+# ── Optional: faster TTS ──
+# piper-tts                 # pip install piper-tts (better voice quality)
