@@ -30,6 +30,7 @@ from depth_estimator import DepthEstimator
 from spatial_engine import SpatialEngine
 from audio_engine import AudioEngine
 from visualizer import Visualizer
+from cloud_client import CloudClient
 
 # ── Logging ──
 logging.basicConfig(
@@ -142,12 +143,24 @@ class DrishtimargaPipeline:
             height=config.camera.height,
         )
 
+        # Always run local detector for responsive tracking
         self.detector = ObjectDetector(config.detector)
-        self.depth = DepthEstimator(config.depth)
+        
+        # Local depth only if cloud is disabled or as a fallback
+        self.depth = None
+        if not config.cloud.enabled or config.depth.enabled:
+            self.depth = DepthEstimator(config.depth)
+            
         self.spatial = SpatialEngine(
             config.spatial, config.threat, config.navigation)
         self.audio = AudioEngine(config.audio)
         self.visualizer = Visualizer(config.display)
+        
+        # Cloud Backend
+        self.cloud_client = None
+        if config.cloud.enabled:
+            self.cloud_client = CloudClient(config.cloud.endpoint_url)
+            logger.info("Cloud mode enabled (SOTA Transformer models)")
 
         # Performance tracking
         self._cycle_times = []
@@ -176,16 +189,39 @@ class DrishtimargaPipeline:
                 if frame is None:
                     continue
 
-                # ── 2. Run object detection + tracking ──
-                detections = self.detector.detect_and_track(frame)
-
-                # ── 3. Run depth estimation ──
-                depth_map = self.depth.estimate(
-                    frame) if self.config.depth.enabled else None
+                # ── 2. Run local object detection (30 FPS baseline) ──
+                detections = []
+                if not self.config.cloud.cloud_only:
+                    detections = self.detector.detect_and_track(frame)
+                
+                # ── 3. Hybrid / Cloud Only Logic ──
+                depth_map = None
+                
+                if self.config.cloud.enabled and self.config.cloud.cloud_only and self.cloud_client:
+                    # CLOUD ONLY MODE: Bypass local models entirely
+                    self.cloud_client.update(frame)
+                    # Block until results are available (synchronous-like behavior for "pure" cloud feel)
+                    # or just get latest. For safety, we use latest available.
+                    depth_map = self.cloud_client.merge_results(detections) # detections list is empty here, filled by cloud
+                    inference_info = f"CLOUD ONLY | {self.cloud_client.latency_info}"
+                    
+                elif self.config.cloud.enabled and self.cloud_client:
+                    # HYBRID MODE: Run local, augment with cloud
+                    self.cloud_client.update(frame)
+                    depth_map = self.cloud_client.merge_results(detections)
+                    inference_info = self.cloud_client.latency_info
+                
+                else:
+                    # PURE LOCAL MODE
+                    if self.depth:
+                        depth_map = self.depth.estimate(frame)
+                    inference_info = f"Det: {self.detector.inference_ms:.0f}ms"
+                    if self.depth:
+                        inference_info += f" | Depth: {self.depth.inference_ms:.0f}ms"
 
                 # ── 4. Spatial analysis + threat scoring ──
                 assessments = self.spatial.update(
-                    detections, depth_map, frame.shape[:2]
+                    detections, depth_map, frame, frame.shape[:2]
                 )
 
                 # Debug: log when objects are first detected
@@ -213,10 +249,14 @@ class DrishtimargaPipeline:
 
                 # ── 7. Visualization ──
                 if self.config.display.show_video:
+                    # Add cloud latency to cycle time if enabled
+                    if self.config.cloud.enabled:
+                        cycle_ms = (time.perf_counter() - cycle_start) * 1000
+                        inference_info += f" | Loop: {cycle_ms:.0f}ms"
+                    
                     extra_info = {
-                        "detection_ms": self.detector.inference_ms,
-                        "depth_ms": self.depth.inference_ms,
-                        "depth_available": self.depth.is_available,
+                        "inference_info": inference_info,
+                        "depth_available": depth_map is not None,
                     }
                     annotated = self.visualizer.draw(
                         frame, detections, assessments, depth_map, extra_info
@@ -298,7 +338,7 @@ Examples:
     )
     parser.add_argument("--source", default=0,
                         help="Camera source: index (0,1,2) or URL for ESP32-CAM")
-    parser.add_argument("--model", default="yolov8s.pt",
+    parser.add_argument("--model", default="yolov8n.pt",
                         help="YOLO model (yolov8n.pt, yolov8s.pt, yolov8m.pt)")
     parser.add_argument("--conf", type=float, default=0.50,
                         help="Detection confidence threshold")
@@ -306,11 +346,17 @@ Examples:
                         help="YOLO input size (320, 416, or 640)")
     parser.add_argument("--no-depth", action="store_true",
                         help="Disable depth model (use bbox-size fallback)")
-    parser.add_argument("--depth-model", default="small",
-                        choices=["small", "base", "large"],
-                        help="Depth Anything V2 relative model variant")
+    parser.add_argument("--depth-model", default="MiDaS_small",
+                        choices=["MiDaS_small", "DPT_Large", "DPT_Hybrid"],
+                        help="MiDaS depth model variant")
     parser.add_argument("--no-display", action="store_true",
                         help="Headless mode — audio only, no video window")
+    parser.add_argument("--cloud", action="store_true",
+                        help="Use cloud GPU backend for SOTA accuracy")
+    parser.add_argument("--cloud-url", default="",
+                        help="Modal web endpoint URL")
+    parser.add_argument("--cloud-only", action="store_true",
+                        help="Disable local models and use Cloud output ONLY")
     parser.add_argument("--speech-rate", type=int, default=190,
                         help="TTS speech rate (words per minute)")
     parser.add_argument("--cooldown", type=float, default=8.0,
@@ -350,6 +396,11 @@ def main():
 
     # Display
     config.display.show_video = not args.no_display
+    
+    # Cloud
+    config.cloud.enabled = args.cloud
+    config.cloud.endpoint_url = args.cloud_url
+    config.cloud.cloud_only = args.cloud_only
 
     # Handle graceful shutdown on Ctrl+C
     def signal_handler(sig, frame):

@@ -138,9 +138,9 @@ class Visualizer:
         avg_fps = sum(self._fps_history) / len(self._fps_history)
 
         # Top-left: system stats
-        stats_bg = np.zeros((90, 280, 3), dtype=np.uint8)
+        stats_bg = np.zeros((90, 320, 3), dtype=np.uint8)
         stats_bg[:] = (30, 30, 30)
-        canvas[0:90, 0:280] = cv2.addWeighted(canvas[0:90, 0:280], 0.3, stats_bg, 0.7, 0)
+        canvas[0:90, 0:320] = cv2.addWeighted(canvas[0:90, 0:320], 0.3, stats_bg, 0.7, 0)
 
         y_off = 18
         cv2.putText(canvas, f"FPS: {avg_fps:.1f}", (10, y_off), font, 0.5,
@@ -151,14 +151,15 @@ class Visualizer:
         y_off += 20
 
         if extra_info:
-            det_ms = extra_info.get("detection_ms", 0)
-            depth_ms = extra_info.get("depth_ms", 0)
-            cv2.putText(canvas, f"Det: {det_ms:.0f}ms | Depth: {depth_ms:.0f}ms",
-                        (10, y_off), font, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
+            inf_info = extra_info.get("inference_info", "Local inference")
+            cv2.putText(canvas, inf_info, (10, y_off), font, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
             y_off += 20
-            depth_status = "GPU" if extra_info.get("depth_available") else "bbox fallback"
-            cv2.putText(canvas, f"Depth: {depth_status}", (10, y_off), font, 0.45,
-                        (200, 200, 200), 1, cv2.LINE_AA)
+            
+            # Show if cloud is currently contributing data
+            is_cloud = "Cloud" in inf_info
+            status_color = (0, 255, 0) if is_cloud else (150, 150, 150)
+            status_text = "SOTA Accuracy: ACTIVE" if is_cloud else "Local Tracking Only"
+            cv2.putText(canvas, status_text, (10, y_off), font, 0.45, status_color, 1, cv2.LINE_AA)
 
         # Top-right: threat summary
         critical_count = sum(1 for a in assessments if a.priority == Priority.CRITICAL)

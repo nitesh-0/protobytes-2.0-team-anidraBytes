@@ -10,12 +10,24 @@ Pillow>=10.0.0
 torch>=2.0.0
 torchvision>=0.15.0
 ultralytics>=8.3.0         # YOLO11 + YOLOv8 + ByteTrack tracking
+timm                       # Required for MiDaS models
 
 # ── Depth Estimation (optional — install for better depth) ──
 transformers>=4.36.0        # Depth Anything V2 via HuggingFace
+mediapipe
+timm
+modal
+requests
+Pillow
+                  # For dynamic metric calibration
 
 # ── Audio ──
 pyttsx3>=2.90               # Offline text-to-speech
+
+# ── Cloud ──
+# fastapi>=0.110.0            # Required for Modal endpoint definition
+# uvicorn[standard]           # Recommended for local testing if needed
+fastapi
 
 # ── Optional: faster TTS ──
 # piper-tts                 # pip install piper-tts (better voice quality)

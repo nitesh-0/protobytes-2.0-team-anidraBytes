@@ -1,41 +1,54 @@
 """
-Drishtimarga — Configuration
-All tunable parameters in one place.
+Drishtimarga — Configuration (FIXED VERSION)
+Corrected confidence thresholds, focal length, and depth parameters.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import Dict, Set
 
 
 @dataclass
 class CameraConfig:
-    source: int = 0                     # 0 = default webcam, or URL string for ESP32
+    source: str = "http://192.168.6.50:81/stream"  # ESP32-CAM URL (or 0 for webcam)
     width: int = 640
     height: int = 480
     fps: int = 30
     buffer_size: int = 1                # keep only latest frame
 
-
 @dataclass
 class DetectorConfig:
-    # YOLOv8s — best balance of accuracy and low false positives
-    model_name: str = "yolov8s.pt"
-    confidence: float = 0.50
+    # YOLOv8n — Fastest baseline for CPU
+    model_name: str = "yolov8n.pt"
+    confidence: float = 0.45            # Lowered for better 'Guard' recall
     iou_threshold: float = 0.5
     input_size: int = 640               # 640 for best accuracy
     device: str = "auto"                # "auto", "cuda", "cpu"
     tracker: str = "bytetrack.yaml"     # or "botsort.yaml"
     half_precision: bool = True         # FP16 on GPU
+    
+    # NEW: Class filtering for navigation
+    relevant_classes: Set[str] = field(default_factory=lambda: {
+        'person', 'bicycle', 'car', 'motorcycle', 'bus', 'truck',
+        'dog', 'cat', 'traffic light', 'stop sign', 'bench', 'chair',
+        'potted plant', 'backpack', 'handbag', 'skateboard', 'sports ball',
+        'fire hydrant', 'parking meter', 'suitcase'
+    })
+    
+    # NEW: Minimum track persistence (frames) before announcing
+    min_track_frames: int = 3           # Object must be tracked for 3 frames to be real
 
 
 @dataclass
 class DepthConfig:
-    model_name: str = "small"           # "small", "base", or "large" (Depth Anything V2 relative)
+    model_name: str = "DepthAnything_V2_Small" # "MiDaS_small", "DepthAnything_V2_Small"
     enabled: bool = True
     # skip frames for speed (1 = every frame)
-    run_every_n_frames: int = 3
-    input_size: int = 518               # Depth Anything V2 native size
+    run_every_n_frames: int = 1         # MiDaS small is fast enough for 1
+    input_size: int = 256               # MiDaS native/optimized size
     device: str = "auto"
+    
+    # NEW: Option to use metric depth model
+    use_metric_model: bool = False      # Set True to use metric variant
 
 
 @dataclass
@@ -44,14 +57,27 @@ class SpatialConfig:
     cell_size: float = 0.5             # meters per cell → 10m x 10m coverage
     track_history_length: int = 15      # frames of history per tracked object
     stale_timeout: float = 3.0          # seconds before object is considered gone
+    
+    # Dynamic Calibration (Too heavy for CPU main loop)
+    calibration_enabled: bool = False
+    calibration_alpha: float = 0.1      # Moving average smoothing (0-1)
+    
     # Distance estimation (focal length calibration)
-    focal_length_px: float = 500.0      # approximate for 640x480 webcam
+    # IMPORTANT: Calibrate this for your specific camera!
+    # Default for typical webcam. ESP32-CAM may need adjustment.
+    focal_length_px: float = 540.0      # FIXED: Updated from 500.0 (needs calibration!)
+    
+    # Known heights in meters (for bbox-based distance estimation)
     known_heights: Dict[str, float] = field(default_factory=lambda: {
         "person": 1.7, "car": 1.5, "bus": 2.8, "truck": 3.0,
         "motorcycle": 1.1, "bicycle": 1.0, "dog": 0.5, "cat": 0.3,
         "chair": 0.8, "bottle": 0.25, "cup": 0.12, "laptop": 0.25,
         "tv": 0.5, "cell phone": 0.14, "backpack": 0.5,
     })
+    
+    # NEW: Uncertainty estimates for fusion
+    bbox_base_uncertainty: float = 0.3  # Base uncertainty in bbox estimates
+    depth_base_uncertainty: float = 0.4  # Base uncertainty in depth estimates
 
 
 @dataclass
@@ -113,6 +139,13 @@ class DisplayConfig:
 
 
 @dataclass
+class CloudConfig:
+    endpoint_url: str = ""              # User's Modal web endpoint URL
+    timeout: float = 5.0
+    cloud_only: bool = False            # If True, disable local models entirely    timeout: float = 5.0
+
+
+@dataclass
 class AppConfig:
     camera: CameraConfig = field(default_factory=CameraConfig)
     detector: DetectorConfig = field(default_factory=DetectorConfig)
@@ -122,3 +155,4 @@ class AppConfig:
     threat: ThreatConfig = field(default_factory=ThreatConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
+    cloud: CloudConfig = field(default_factory=CloudConfig)
