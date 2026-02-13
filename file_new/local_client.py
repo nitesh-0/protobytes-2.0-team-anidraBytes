@@ -258,6 +258,9 @@ class FrameGrabber:
             if self._q.full():
                 try: self._q.get_nowait(); self._dropped += 1
                 except queue.Empty: pass
+            
+            # Rotate 90 degrees anti-clockwise (use existing frame variable)
+            frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
             self._q.put((frame, time.time()))
 
     def _loop_snapshot(self):
@@ -274,6 +277,9 @@ class FrameGrabber:
             if self._q.full():
                 try: self._q.get_nowait(); self._dropped += 1
                 except queue.Empty: pass
+            
+            # Rotate 90 degrees anti-clockwise
+            frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
             self._q.put((frame, time.time()))
 
     def _reconnect(self) -> bool:
@@ -410,11 +416,11 @@ class LocalSpatialTracker:
         )
 
     def _quantize_distance(self, d: float) -> str:
-        if d < 1.0: return "very close"
-        elif d < 2.0: return f"{round(d*2)/2:.1f} meters"
-        elif d < 5.0: return f"{round(d)} meters"
-        elif d < 10.0: return f"about {round(d)} meters"
-        else: return f"about {round(d/2)*2} meters"
+        d_ft = d * 3.28084
+        if d_ft < 3.0: return "very close"
+        elif d_ft < 10.0: return f"{d_ft:.1f} feet"
+        elif d_ft < 20.0: return f"about {round(d_ft)} feet"
+        else: return f"about {round(d_ft/5)*5} feet"
 
     def _build_message(self, obj, distance, position, velocity, ttc, priority):
         cls = obj.class_name
@@ -756,7 +762,8 @@ def draw_frame(frame, server_dets, assessments, extra_info=None):
 
         parts = [f"#{tid} {det['class_name']}"]
         if a:
-            parts.append(f"{a.distance:.1f}m")
+            dist_ft = a.distance * 3.28084
+            parts.append(f"{dist_ft:.1f}ft")
             if a.approach_velocity > 0.3:
                 parts.append(f"v={a.approach_velocity:.1f}")
         label = " | ".join(parts)
