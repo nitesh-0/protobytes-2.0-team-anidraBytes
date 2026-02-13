@@ -44,9 +44,11 @@ gpu_image = (
         "torch>=2.0.0",
         "torchvision>=0.15.0",
         "ultralytics>=8.3.0",
-        "transformers>=4.36.0",
+        "transformers>=4.40.0",
+        "accelerate>=0.29.0",
         "fastapi[standard]",
     )
+    .env({"HF_HOME": "/models"})
 )
 
 # ── Model weights volume (cached across cold starts) ──
@@ -55,6 +57,7 @@ model_volume = modal.Volume.from_name("drishtimarga-models", create_if_missing=T
 # ── HuggingFace model IDs ──
 DEPTH_MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf"
 YOLO_MODEL = "yolo11x.pt"
+MISTRAL_MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3"
 
 
 @app.cls(
@@ -65,7 +68,7 @@ YOLO_MODEL = "yolo11x.pt"
     volumes={"/models": model_volume},
 )
 @modal.concurrent(max_inputs=4)
-class DrishtimargaInference:
+class Engine:
     """
     Stateful Modal class that loads models once on container start,
     then serves inference requests via a FastAPI web endpoint.
@@ -105,6 +108,17 @@ class DrishtimargaInference:
         # Warm up
         self._run_depth(dummy)
         logger.info("Depth ready")
+
+        # ── Mistral 7B ──
+        logger.info(f"Loading Mistral: {MISTRAL_MODEL_ID}")
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(MISTRAL_MODEL_ID)
+        self.llm = AutoModelForCausalLM.from_pretrained(
+            MISTRAL_MODEL_ID,
+            torch_dtype=torch.bfloat16,
+            device_map="auto"
+        )
+        logger.info("Mistral ready")
 
         # Tracking state (ByteTrack needs persist=True across frames)
         self._track_counter = 0
@@ -210,8 +224,8 @@ class DrishtimargaInference:
             frame_bgr,
             persist=True,
             conf=0.40,
-            iou=0.50,
-            imgsz=640,
+            iou=0.45,
+            imgsz=320,
             tracker="bytetrack.yaml",
             half=(self.device == "cuda"),
             device=self.device,
@@ -309,7 +323,35 @@ class DrishtimargaInference:
 
         return self._process_frame(frame)
 
+    @modal.fastapi_endpoint(method="POST", docs=True)
+    async def narrate(self, request: dict):
+        """
+        Perform LLM narration on a text prompt.
+        """
+        import torch
+        prompt = request.get("prompt", "")
+        if not prompt:
+            return {"error": "No prompt provided"}
+
+        logger.info(f"Narrating scene: {prompt[:100]}...")
+        input_ids = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        
+        with torch.no_grad():
+            outputs = self.llm.generate(
+                **input_ids,
+                max_new_tokens=40,
+                temperature=0.5,
+                do_sample=True,
+                pad_token_id=self.tokenizer.eos_token_id
+            )
+            
+        # Only decode the NEW tokens (ignoring the prompt)
+        new_tokens = outputs[0][input_ids['input_ids'].shape[-1]:]
+        text = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        
+        return {"text": text}
+
     @modal.fastapi_endpoint(method="GET", docs=True)
     async def health(self):
         """Health check endpoint."""
-        return {"status": "ok", "model": "drishtimarga-v2", "gpu": self.device}
+        return {"status": "ok", "model": "drishtimarga-v2", "gpu": self.device, "llm": "mistral-7b"}

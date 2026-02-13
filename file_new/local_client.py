@@ -44,6 +44,8 @@ from enum import IntEnum, Enum
 import cv2
 import numpy as np
 import requests
+from narrator import MistralNarrator
+from config import AppConfig, HfConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -157,7 +159,7 @@ class FrameGrabber:
         "QVGA": (320, 240, 5),
     }
 
-    def __init__(self, source, width=640, height=480):
+    def __init__(self, source, width: int = 320, height: int = 240):
         self.source = source
         self.width = width
         self.height = height
@@ -873,14 +875,20 @@ class DrishtimargaCloudPipeline:
     """
 
     def __init__(self, source, server_url: str, show_video=True,
-                 jpeg_quality=75, speech_rate=185):
+                 jpeg_quality=60, speech_rate=185):
         self._running = False
 
+        # LLM Narration State
+        self.hf_config = HfConfig()
+        self.narrator = MistralNarrator(self.hf_config)
+        self._batch_detections: List[dict] = []
+        self._last_batch_time = time.time()
+
         logger.info("=" * 60)
-        logger.info("  DRISHTIMARGA v2 — Cloud Mode (Modal GPU)")
+        logger.info("  DRISHTIMARGA v2 — Cloud Mode (Modal GPU) + Mistral AI")
         logger.info("=" * 60)
 
-        self.grabber = FrameGrabber(source, 640, 480)
+        self.grabber = FrameGrabber(source, 320, 240)
         self.modal_client = ModalClient(server_url, jpeg_quality=jpeg_quality)
         self.tracker = LocalSpatialTracker()
         self.memory = LocalAnnouncementMemory()
@@ -930,13 +938,45 @@ class DrishtimargaCloudPipeline:
                 # 4. Announcement memory filtering
                 to_speak, departures = self.memory.filter(assessments)
 
-                # 5. Audio
-                self.audio.speak_assessments(to_speak)
-                self.audio.speak_departures(departures)
+                # 5. Audio (Parallel Logic)
+                
+                # A. Immediate Danger Alerts (Local Fallback)
+                # These bypass the LLM for safety.
+                urgent = [a for a in to_speak if a.priority == Priority.CRITICAL]
+                if urgent:
+                    self.audio.speak_assessments(urgent)
+                
+                # B. Normal detections go to Narrative Buffer
+                # We collect unique detections over a window
+                for a in to_speak:
+                    if a.priority != Priority.CRITICAL:
+                        # Append detection info to batch if not already present
+                        if not any(d['track_id'] == a.track_id for d in self._batch_detections):
+                            self._batch_detections.append({
+                                "track_id": a.track_id,
+                                "class_name": a.class_name,
+                                "distance": a.distance,
+                                "position": a.position
+                            })
 
-                summary = self.tracker.get_scene_summary()
-                if self.memory.should_do_summary(summary):
-                    self.audio.speak_summary(summary)
+                # C. Trigger LLM Narration
+                now = time.time()
+                if (now - self._last_batch_time) >= self.hf_config.batch_window:
+                    if self._batch_detections and self.narrator.should_narrate():
+                        logger.info(f"NARRATION CYCLE: Processing {len(self._batch_detections)} objects...")
+                        # We have a batch and it's time to talk
+                        self.narrator.narrate_async(
+                            self._batch_detections, 
+                            callback=self.audio.speak_now
+                        )
+                        # Clear batch after sending
+                        self._batch_detections = []
+                        self._last_batch_time = now
+                    elif not self._batch_detections:
+                        # Reset timer even if empty to keep window aligned
+                        self._last_batch_time = now
+
+                self.audio.speak_departures(departures)
 
                 # 6. Visualization
                 if self.show_video:
@@ -980,15 +1020,14 @@ class DrishtimargaCloudPipeline:
 
 
 def parse_args():
+    from config import CAMERA_SOURCE, MODAL_URL
     p = argparse.ArgumentParser(
         description="Drishtimarga v2 — Local client for Modal cloud inference")
-    p.add_argument("--source", default=0,
-                   help="Camera index (0,1) or ESP32-CAM URL "
-                        "(e.g. http://192.168.6.50:81/stream)")
-    p.add_argument("--server-url", required=True,
-                   help="Modal endpoint URL for the infer endpoint "
-                        "(from `modal deploy modal_server.py`)")
-    p.add_argument("--jpeg-quality", type=int, default=75,
+    p.add_argument("--source", default=CAMERA_SOURCE,
+                   help="Camera index (0,1) or ESP32-CAM URL")
+    p.add_argument("--server-url", default=MODAL_URL,
+                   help="Modal endpoint URL for information")
+    p.add_argument("--jpeg-quality", type=int, default=60,
                    help="JPEG compression quality for frames sent to server (1-100)")
     p.add_argument("--no-display", action="store_true",
                    help="Audio only, no video window")

@@ -3,9 +3,23 @@ Drishtimarga v2 — Configuration
 All tunable parameters in one place.
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import Dict, Union
 
+# ═══════════════════════════════════════════════════════════════════
+# QUICK TOGGLE SETTINGS
+# ═══════════════════════════════════════════════════════════════════
+
+# Uncomment the one you want to use:
+CAMERA_SOURCE = 0                                       # Laptop/Webcam
+#CAMERA_SOURCE = "http://192.168.6.50:81/stream"           # ESP32-CAM
+
+# Your Modal 'infer' endpoint URL
+MODAL_URL = "https://niteshsah760--drishtimarga-v2-engine-infer.modal.run"
+MODAL_NARRATE_URL = "https://niteshsah760--drishtimarga-v2-engine-narrate.modal.run"
+
+# ═══════════════════════════════════════════════════════════════════
 
 @dataclass
 class CameraConfig:
@@ -120,6 +134,18 @@ class AudioConfig:
 
 
 @dataclass
+class HfConfig:
+    """Hugging Face Inference API configuration."""
+    api_key: str = os.getenv("HF_TOKEN", "")
+    model_id: str = "mistralai/Mistral-7B-Instruct-v0.3"
+    api_url: str = "https://router.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3"
+    max_new_tokens: int = 60
+    temperature: float = 0.7
+    narrative_cooldown: float = 12.0    # Seconds between LLM narrations
+    batch_window: float = 3.0         # Seconds to collect detections before narrating
+
+
+@dataclass
 class DisplayConfig:
     show_video: bool = True
     show_depth: bool = False
@@ -137,3 +163,4 @@ class AppConfig:
     announcement: AnnouncementConfig = field(default_factory=AnnouncementConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
+    hf: HfConfig = field(default_factory=HfConfig)
