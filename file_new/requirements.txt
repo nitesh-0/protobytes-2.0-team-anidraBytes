@@ -1,0 +1,23 @@
+# Drishtimarga v2 — Dependencies
+# Install: pip install -r requirements.txt
+
+# ── Core ──
+numpy>=1.24.0
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# ── AI / ML ──
+torch>=2.0.0
+torchvision>=0.15.0
+ultralytics>=8.3.0         # YOLOv11 + ByteTrack tracking
+
+# ── Depth Estimation ──
+transformers>=4.36.0        # Depth Anything V2 Metric via HuggingFace
+
+# ── Audio ──
+pyttsx3>=2.90               # Offline TTS (cross-platform fallback)
+# comtypes                  # Windows: better SAPI TTS (auto-detected)
+
+# ── Cloud (Modal deployment) ──
+modal>=0.64.0               # Modal GPU serverless platform
+requests>=2.28.0            # HTTP client for local_client → Modal
