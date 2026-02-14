@@ -66,7 +66,7 @@ ELEVENLABS_MODEL = "eleven_multilingual_v2"
 
 # ── Narration config ──
 MIN_AUDIO_INTERVAL = 6.0    # Minimum wait between narrations
-MAX_AUDIO_INTERVAL = 12.0   # Force narration if no change for this long
+MAX_AUDIO_INTERVAL = 10.0   # Force narration if no change for this long (Strictly every 10s)
 STABILITY_THRESHOLD = 15    # Number of frames to check for scene stability
 
 # ── GPT System Prompt ──
@@ -79,12 +79,12 @@ Movement Tags Guide:
 - "स्थिर" (static/still)
 
 Rules:
-1. Data Strictness: ONLY describe objects present in the JSON input. Do NOT assume a "person" exists if the data only contains "chair" or "laptop".
-2. Natural Phrasing: Use the style: "[Object] is approximately [Distance] feet [Position] of you and is [Movement]."
-   Example: "एक कुर्सी तपाईको बायाँ तिर १० फिटको दुरीमा स्थिर अवस्थामा छ।"
-3. Pure Nepali: Speak only in Nepali. Convert all numbers to pure Nepali words.
-4. Brevity: One short, natural sentence. No prefixes like "I see" or "Detections are".
-5. Movement: Explicitly mention if something is coming towards or going away from the user.
+1. Data Strictness: ONLY describe objects present in the JSON input.
+2. Natural Phrasing: Use "लगभग" (lagbhag) for all distances. Use the style: "एक [वस्तु] तपाईको [स्थिति] तिर लगभग [दूरी] फिटमा छ र [गति] अवस्थामा छ।"
+   Example: "एक कुर्सी तपाईको बायाँ तिर लगभग १० फिटको दुरीमा स्थिर अवस्थामा छ।"
+3. Position: Map 'ahead' to 'तपाईको अगाडि'.
+4. Pure Nepali: Speak only in Nepali. Convert all numbers to pure Nepali words.
+5. Brevity: One short, natural sentence. No robotic prefixes.
 """
 
 
@@ -152,6 +152,7 @@ class DrishtimargaInference:
         self._last_llm_response = ""
         self._scene_history = []  # rolling window of recent scenes for LLM context
         self._consecutive_empty = 0  # how many times LLM said nothing
+        self._tts_fails = 0  # consecutive TTS failures
 
         # Per-object EMA smoothed distances
         self._smoothed_distances: Dict[int, float] = {}
@@ -176,8 +177,8 @@ class DrishtimargaInference:
         self._velocity_history: Dict[int, list] = {}
 
         # ── Refactored Narration State ──
-        self._last_announcement_time = 0.0
-        self._frame_buffer = []  # Buffer for 15-frame consensus
+        self._last_announcement_time = time.time()  # Init to NOW to avoid cold-start flood
+        self._frame_buffer = []  # Buffer for consensus
         self._last_narrated_scene_fingerprint = ""
 
     # ════════════════════════════════════════════════════════════
@@ -360,16 +361,20 @@ class DrishtimargaInference:
                 class_name = results[0].names[cid]
                 active_track_ids.add(tid)
 
-                # Raw metric distance
-                raw_distance = self._get_distance(
+                # Raw distance from depth model
+                raw_metric = self._get_distance(
                     depth_map, [x1, y1, x2, y2], cx, cy, bbox_h, class_name)
+                
+                # ── 70% Distance Reduction ──
+                # User requested 100ft -> 30ft, so multiply by 0.3
+                dist_m = raw_metric * 0.3
 
                 # EMA smooth per-object distance
                 if tid in self._smoothed_distances:
                     prev = self._smoothed_distances[tid]
-                    distance = self._distance_alpha * raw_distance + (1 - self._distance_alpha) * prev
+                    distance = self._distance_alpha * dist_m + (1 - self._distance_alpha) * prev
                 else:
-                    distance = raw_distance
+                    distance = dist_m
                 self._smoothed_distances[tid] = distance
 
                 # Velocity
@@ -382,7 +387,7 @@ class DrishtimargaInference:
                 elif rel_x > 0.67:
                     position = "right"
                 else:
-                    position = "center"
+                    position = "ahead"
 
                 # Distance in feet for the LLM (round to integer)
                 distance_ft = int(round(distance * 3.28084))
@@ -422,61 +427,91 @@ class DrishtimargaInference:
 
         time_since_last = now - self._last_announcement_time
         
-        # ── Decide if we should try to narrate ──
-        # We process the buffer when it hits exactly 15 frames or at heartbeat interval
-        should_evaluate = len(self._frame_buffer) >= 15 or time_since_last >= MAX_AUDIO_INTERVAL
+        # ── Refactored Trigger Logic ──
+        # Always evaluate if enough time has passed (heartbeat) or buffer is full
+        should_evaluate = len(self._frame_buffer) >= 10 or time_since_last >= MAX_AUDIO_INTERVAL
 
-        if should_evaluate and detections:
-            # 1. Consensus Voting: only keep objects present in >= 50% of frames
-            # This eliminates 'flickering' hallucinations
+        logger.debug(f"Frame #{self._track_counter}: buf={len(self._frame_buffer)} dets={len(detections)} t_since={time_since_last:.1f}s eval={should_evaluate}")
+
+        if should_evaluate:
+            # 1. Consensus Voting (loosened to 3 for fast response)
             from collections import Counter
             all_ids = [d["track_id"] for frame in self._frame_buffer for d in frame]
             counts = Counter(all_ids)
-            stable_ids = {tid for tid, count in counts.items() if count >= 8}
+            min_consensus = max(2, len(self._frame_buffer) // 3)  # At least seen in 1/3 of frames
+            stable_ids = {tid for tid, count in counts.items() if count >= min_consensus}
             
             stable_detections = []
             for d in detections:
                 if d["track_id"] in stable_ids:
-                    # Enhance with movement tag
                     d["movement"] = self._get_movement_tag(d)
                     stable_detections.append(d)
             
+            # If heartbeat and no consensus, just use current detections directly
+            if not stable_detections and time_since_last >= MAX_AUDIO_INTERVAL and detections:
+                for d in detections:
+                    d["movement"] = self._get_movement_tag(d)
+                stable_detections = detections[:3]  # Take top 3 closest
+                logger.info(f"Heartbeat bypass: using {len(stable_detections)} raw detections (no consensus)")
+            
+            # 2. Scene Fingerprint
             if stable_detections:
-                # 2. Build Scene Fingerprint
-                # Fingerprint includes Class, Position, and rounded Distance to detect real changes
                 scene_fingerprint = "|".join(
-                    f"{d['class_name']}-{d['position']}-{round(d['distance_ft']/5)*5}"
+                    f"{d['class_name']}-{d['position']}-{round(d['distance_ft']/10)*10}"
                     for d in sorted(stable_detections, key=lambda x: x['distance_ft'])[:3]
                 )
+            else:
+                scene_fingerprint = "empty"
 
-                is_scene_changed = scene_fingerprint != self._last_narrated_scene_fingerprint
-                
-                # 3. Trigger Logic
-                should_call_llm = False
-                if is_scene_changed and time_since_last >= MIN_AUDIO_INTERVAL:
-                    should_call_llm = True
-                elif time_since_last >= MAX_AUDIO_INTERVAL:
-                    should_call_llm = True
-                
-                # Critical immediate trigger
-                if self._has_critical_threat(stable_detections) and time_since_last >= 3.0:
-                    should_call_llm = True
+            is_scene_changed = scene_fingerprint != self._last_narrated_scene_fingerprint
+            
+            # 3. Trigger Logic (Strict 6-10s)
+            should_call_llm = False
+            call_type = "skipped"
 
-                if should_call_llm:
-                    t2 = _time.perf_counter()
-                    llm_text, urgency = self._call_llm(stable_detections, now)
-                    llm_ms = (_time.perf_counter() - t2) * 1000
+            if time_since_last >= MAX_AUDIO_INTERVAL:
+                should_call_llm = True
+                call_type = "heartbeat"
+            elif is_scene_changed and time_since_last >= MIN_AUDIO_INTERVAL:
+                should_call_llm = True
+                call_type = "change"
+            
+            # Critical immediate bypass
+            if self._has_critical_threat(stable_detections) and time_since_last >= 3.0:
+                should_call_llm = True
+                call_type = "critical"
 
-                    if llm_text:
-                        llm_text = self._to_nepali_words(llm_text)
-                        t3 = _time.perf_counter()
-                        audio_b64 = self._call_elevenlabs(llm_text)
-                        tts_ms = (_time.perf_counter() - t3) * 1000
-                        logger.info(f"LLM: '{llm_text}' | urgency={urgency} | consensus_size={len(stable_detections)}")
-                        
+            logger.info(f"Eval: call={should_call_llm} type={call_type} stable={len(stable_detections)} fp={scene_fingerprint[:30]} changed={is_scene_changed} t={time_since_last:.1f}s")
+
+            if should_call_llm:
+                t2 = _time.perf_counter()
+                llm_text, urgency = self._call_llm(stable_detections, now, call_type)
+                llm_ms = (_time.perf_counter() - t2) * 1000
+                logger.info(f"LLM returned: '{llm_text[:50]}' urgency={urgency} in {llm_ms:.0f}ms")
+
+                if llm_text:
+                    llm_text = self._to_nepali_words(llm_text)
+                    t3 = _time.perf_counter()
+                    audio_b64 = self._call_tts(llm_text)
+                    tts_ms = (_time.perf_counter() - t3) * 1000
+                    
+                    if audio_b64:
+                        logger.info(f"Narration OK: {call_type} | '{llm_text}' | audio={len(audio_b64)}chars | tts={tts_ms:.0f}ms")
                         self._last_announcement_time = now
                         self._last_narrated_scene_fingerprint = scene_fingerprint
-                        self._frame_buffer = [] # Clear buffer after successful narration
+                        self._frame_buffer = []
+                        self._tts_fails = 0
+                    else:
+                        self._tts_fails += 1
+                        logger.error(f"TTS FAILED ({self._tts_fails}x) for: '{llm_text}'")
+                        # After 3 consecutive TTS failures, reset timer to avoid hammering
+                        if self._tts_fails >= 3:
+                            logger.error("TTS failing repeatedly — backing off for 10s")
+                            self._last_announcement_time = now
+                            self._tts_fails = 0
+                else:
+                    logger.info(f"LLM empty for {call_type}, will retry")
+                    self._last_narrated_scene_fingerprint = scene_fingerprint
 
         total_ms = (_time.perf_counter() - t0) * 1000
 
@@ -498,10 +533,10 @@ class DrishtimargaInference:
         vel = d.get("velocity_mps", 0)
         dist = d.get("distance_ft", 0)
         
-        # Approaching is positive velocity in my compute_velocity
-        if vel > 0.4:
+        # Approaching
+        if vel > 0.5:
             return "नजिकिँदै"
-        elif vel < -0.4:
+        elif vel < -0.5:
             return "टाढिँदै"
         else:
             return "स्थिर"
@@ -541,30 +576,22 @@ class DrishtimargaInference:
     # GPT-4o-mini LLM call
     # ════════════════════════════════════════════════════════════
 
-    def _call_llm(self, detections: list, now: float) -> tuple:
-        """
-        Call GPT-4o-mini to analyze the scene and generate a short Nepali announcement.
-        Returns (text, urgency) — text may be empty string if nothing to say.
-        """
+    def _call_llm(self, detections: list, now: float, call_type: str = "change") -> tuple:
+        """Call GPT-4o-mini with spatial context."""
         try:
-            # Build compact scene description for the LLM
             scene_data = self._build_scene_for_llm(detections)
+            
+            ctx = {
+                "change": "Significant Change: ",
+                "heartbeat": "Heartbeat (Status update): ",
+                "critical": "EMERGENCY: "
+            }.get(call_type, "")
 
-            # Include previous context so LLM knows what was already said
-            context = ""
-            if self._scene_history:
-                last = self._scene_history[-1]
-                context = f"\nPrevious scene ({last['ago']:.1f}s ago): {last['summary']}"
-                if self._last_llm_response:
-                    context += f"\nLast announcement: \"{self._last_llm_response}\""
-                if self._consecutive_empty > 0:
-                    context += f"\n(No announcement for last {self._consecutive_empty} cycles)"
-
-            user_msg = f"""Current scene:
+            user_msg = f"""Current Scene Data:
+{ctx}
 {scene_data}
-{context}
 
-Respond with JSON only: {{"speak": "...", "urgency": "none|low|medium|high|critical"}}"""
+Respond with JSON only: {{"speak": "Natural Nepali description", "urgency": "none|low|medium|high|critical"}}"""
 
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -622,20 +649,13 @@ Respond with JSON only: {{"speak": "...", "urgency": "none|low|medium|high|criti
         # Sort by distance (closest first)
         sorted_dets = sorted(detections, key=lambda d: d["distance_ft"])
 
-        for d in sorted_dets[:8]:  # max 8 objects for token efficiency
+        for d in sorted_dets[:6]:
             parts = [
                 f"{d['class_name']}",
-                f"#{d['track_id']}",
                 f"{d['distance_ft']}ft",
                 f"{d['position']}",
+                f"{d.get('movement', 'stable')}"
             ]
-            if d["velocity_mps"] > 0.3:
-                parts.append(f"approaching@{d['velocity_mps']:.1f}m/s")
-                # Time to collision
-                if d["velocity_mps"] > 0.1:
-                    ttc = d["distance_m"] / d["velocity_mps"]
-                    if ttc < 10:
-                        parts.append(f"TTC={ttc:.1f}s")
             lines.append(" | ".join(parts))
 
         return "\n".join(lines)
@@ -643,6 +663,56 @@ Respond with JSON only: {{"speak": "...", "urgency": "none|low|medium|high|criti
     # ════════════════════════════════════════════════════════════
     # ElevenLabs TTS
     # ════════════════════════════════════════════════════════════
+
+    def _call_tts(self, text: str) -> Optional[str]:
+        """Try ElevenLabs first, fall back to Google Translate TTS."""
+        # Try ElevenLabs
+        audio = self._call_elevenlabs(text)
+        if audio:
+            return audio
+        
+        # Fallback: Google Translate TTS (free, supports Nepali)
+        logger.info("ElevenLabs failed — using Google TTS fallback")
+        return self._call_gtts_fallback(text)
+
+    def _call_gtts_fallback(self, text: str) -> Optional[str]:
+        """Free Google Translate TTS fallback. Supports Nepali. No API key needed."""
+        import requests
+        import urllib.parse
+
+        try:
+            # Google Translate TTS endpoint — supports Nepali (ne)
+            # Split long text into chunks of 200 chars (Google limit)
+            chunks = []
+            remaining = text
+            while remaining:
+                chunk = remaining[:200]
+                remaining = remaining[200:]
+                chunks.append(chunk)
+
+            all_audio = b""
+            for chunk in chunks:
+                encoded = urllib.parse.quote(chunk)
+                url = f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl=ne&client=tw-ob&ttsspeed=0.8"
+                
+                resp = requests.get(url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                }, timeout=10)
+                
+                if resp.status_code == 200 and len(resp.content) > 100:
+                    all_audio += resp.content
+                else:
+                    logger.error(f"Google TTS failed: HTTP {resp.status_code}, {len(resp.content)} bytes")
+                    return None
+
+            if all_audio:
+                logger.info(f"Google TTS OK: {len(all_audio)} bytes")
+                return base64.b64encode(all_audio).decode("ascii")
+            return None
+
+        except Exception as e:
+            logger.error(f"Google TTS error: {type(e).__name__}: {e}")
+            return None
 
     def _call_elevenlabs(self, text: str) -> Optional[str]:
         """Convert Nepali text to speech via ElevenLabs API. Returns base64 MP3."""
@@ -666,17 +736,24 @@ Respond with JSON only: {{"speak": "...", "urgency": "none|low|medium|high|criti
                 },
             }
 
-            resp = requests.post(url, json=payload, headers=headers, timeout=10)
+            resp = requests.post(url, json=payload, headers=headers, timeout=15)
 
             if resp.status_code == 200:
                 audio_bytes = resp.content
+                if len(audio_bytes) < 100:
+                    logger.error(f"ElevenLabs returned tiny audio ({len(audio_bytes)} bytes)")
+                    return None
+                logger.info(f"ElevenLabs OK: {len(audio_bytes)} bytes")
                 return base64.b64encode(audio_bytes).decode("ascii")
             else:
-                logger.error(f"ElevenLabs error {resp.status_code}: {resp.text[:200]}")
+                logger.error(f"ElevenLabs HTTP {resp.status_code}: {resp.text[:300]}")
                 return None
 
+        except requests.exceptions.Timeout:
+            logger.error("ElevenLabs TIMEOUT (15s)")
+            return None
         except Exception as e:
-            logger.error(f"ElevenLabs error: {e}")
+            logger.error(f"ElevenLabs exception: {type(e).__name__}: {e}")
             return None
 
     # ════════════════════════════════════════════════════════════

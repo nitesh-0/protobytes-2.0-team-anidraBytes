@@ -424,7 +424,7 @@ class FrameGrabber:
 class ModalClient:
     """Sends frames to Modal endpoint and receives inference results + audio."""
 
-    def __init__(self, server_url: str, jpeg_quality: int = 60, timeout: float = 20.0):
+    def __init__(self, server_url: str, jpeg_quality: int = 60, timeout: float = 60.0):
         self.server_url = server_url.rstrip("/")
         self.jpeg_quality = jpeg_quality
         self.timeout = timeout
@@ -647,11 +647,18 @@ class DrishtimargaCloudPipeline:
                 audio_b64 = result.get("audio_b64")
                 llm_text = result.get("llm_text", "")
                 urgency = result.get("urgency", "none")
+                total_ms = result.get("total_ms", 0)
+
+                # DIAGNOSTIC: Always log what server returned
+                if llm_text:
+                    logger.info(f"📝 Server LLM: '{llm_text}' | audio={'YES' if audio_b64 else 'NO'} | total={total_ms}ms")
 
                 if audio_b64:
                     self.audio.play_audio_b64(audio_b64, urgency)
                     self._last_announcement = llm_text
                     logger.info(f"🔊 [{urgency}] {llm_text}")
+                elif llm_text:
+                    logger.warning(f"⚠️ Got LLM text but NO audio: '{llm_text[:60]}'")
 
                 # 4. Visualization
                 if self.show_video:
