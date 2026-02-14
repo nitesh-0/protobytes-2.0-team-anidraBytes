@@ -65,8 +65,8 @@ ELEVENLABS_VOICE_ID = "pFZP5JQG7iQjIQuC4Bku"  # "Lily" — clear female, good fo
 ELEVENLABS_MODEL = "eleven_multilingual_v2"
 
 # ── Narration config ──
-MIN_AUDIO_INTERVAL = 6.0    # Minimum wait between narrations
-MAX_AUDIO_INTERVAL = 10.0   # Force narration if no change for this long (Strictly every 10s)
+MIN_AUDIO_INTERVAL = 10.0   # Server-side min (perceived ~7s after audio playback)
+MAX_AUDIO_INTERVAL = 15.0   # Server-side max heartbeat (perceived ~12s)
 STABILITY_THRESHOLD = 15    # Number of frames to check for scene stability
 
 # ── GPT System Prompt ──
@@ -85,6 +85,9 @@ Rules:
 3. Position: Map 'ahead' to 'तपाईको अगाडि'.
 4. Pure Nepali: Speak only in Nepali. Convert all numbers to pure Nepali words.
 5. Brevity: One short, natural sentence. No robotic prefixes.
+6. NO REPETITION: If the scene has not changed meaningfully from last time, respond with {"speak": "", "urgency": "none"}. Do NOT repeat the same object at the same distance.
+7. SMART MOTION: Prioritize objects that are MOVING (approaching or receding). Mention static objects only on first appearance or if their position changes significantly.
+8. Heartbeat messages: When told it's a Heartbeat, give a very brief status only if something changed. If nothing changed, respond with {"speak": "", "urgency": "none"}.
 """
 
 
@@ -365,9 +368,9 @@ class DrishtimargaInference:
                 raw_metric = self._get_distance(
                     depth_map, [x1, y1, x2, y2], cx, cy, bbox_h, class_name)
                 
-                # ── 70% Distance Reduction ──
-                # User requested 100ft -> 30ft, so multiply by 0.3
-                dist_m = raw_metric * 0.3
+                # ── 80% Distance Reduction ──
+                # User requested further reduction, so multiply by 0.2
+                dist_m = raw_metric * 0.2
 
                 # EMA smooth per-object distance
                 if tid in self._smoothed_distances:
@@ -457,7 +460,7 @@ class DrishtimargaInference:
             # 2. Scene Fingerprint
             if stable_detections:
                 scene_fingerprint = "|".join(
-                    f"{d['class_name']}-{d['position']}-{round(d['distance_ft']/10)*10}"
+                    f"{d['class_name']}-{d['position']}-{round(d['distance_ft']/5)*5}"
                     for d in sorted(stable_detections, key=lambda x: x['distance_ft'])[:3]
                 )
             else:
@@ -475,11 +478,6 @@ class DrishtimargaInference:
             elif is_scene_changed and time_since_last >= MIN_AUDIO_INTERVAL:
                 should_call_llm = True
                 call_type = "change"
-            
-            # Critical immediate bypass
-            if self._has_critical_threat(stable_detections) and time_since_last >= 3.0:
-                should_call_llm = True
-                call_type = "critical"
 
             logger.info(f"Eval: call={should_call_llm} type={call_type} stable={len(stable_detections)} fp={scene_fingerprint[:30]} changed={is_scene_changed} t={time_since_last:.1f}s")
 
@@ -510,8 +508,10 @@ class DrishtimargaInference:
                             self._last_announcement_time = now
                             self._tts_fails = 0
                 else:
-                    logger.info(f"LLM empty for {call_type}, will retry")
+                    logger.info(f"LLM empty for {call_type}, resetting timer")
                     self._last_narrated_scene_fingerprint = scene_fingerprint
+                    # Reset timer on empty heartbeat to prevent infinite retries
+                    self._last_announcement_time = now
 
         total_ms = (_time.perf_counter() - t0) * 1000
 
@@ -586,11 +586,15 @@ class DrishtimargaInference:
                 "heartbeat": "Heartbeat (Status update): ",
                 "critical": "EMERGENCY: "
             }.get(call_type, "")
+            # Include previous narration so LLM doesn't repeat
+            prev_context = ""
+            if self._last_llm_response:
+                prev_context = f"\nPrevious narration (DO NOT REPEAT THIS): {self._last_llm_response}\n"
 
             user_msg = f"""Current Scene Data:
 {ctx}
 {scene_data}
-
+{prev_context}
 Respond with JSON only: {{"speak": "Natural Nepali description", "urgency": "none|low|medium|high|critical"}}"""
 
             response = self.openai_client.chat.completions.create(
@@ -693,7 +697,7 @@ Respond with JSON only: {{"speak": "Natural Nepali description", "urgency": "non
             all_audio = b""
             for chunk in chunks:
                 encoded = urllib.parse.quote(chunk)
-                url = f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl=ne&client=tw-ob&ttsspeed=0.8"
+                url = f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl=ne&client=tw-ob&ttsspeed=1.3"
                 
                 resp = requests.get(url, headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"

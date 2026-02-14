@@ -726,10 +726,20 @@ def parse_args():
 def main():
     args = parse_args()
 
-    try:
-        source = int(args.source)
-    except (ValueError, TypeError):
-        source = args.source
+    # ╔═══════════════════════════════════════════════════════════╗
+    # ║  CAMERA SOURCE TOGGLE — comment/uncomment to switch      ║
+    # ╚═══════════════════════════════════════════════════════════╝
+    CAMERA_SOURCE = 0                                          # Laptop webcam
+    # CAMERA_SOURCE = "http://192.168.6.50:81/stream"          # ESP32-CAM
+
+    # Override with CLI --source if provided, otherwise use toggle above
+    if args.source != 0:
+        try:
+            source = int(args.source)
+        except (ValueError, TypeError):
+            source = args.source
+    else:
+        source = CAMERA_SOURCE
 
     pipeline = DrishtimargaCloudPipeline(
         source=source,
