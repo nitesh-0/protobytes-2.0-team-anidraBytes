@@ -28,6 +28,7 @@ class DetectorConfig:
     half_precision: bool = True         # FP16 on GPU
 
 
+
 @dataclass
 class DepthConfig:
     model_name: str = "base"            # "small", "base", or "large" (Depth Anything V2)
